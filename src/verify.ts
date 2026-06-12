@@ -20,6 +20,8 @@
  */
 
 import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /** Networks with an embedded verification key. */
 export type VerifyNetwork = 'devnet' | 'mainnet';
@@ -74,23 +76,31 @@ let backend: VerifyBackend | undefined;
 
 // Synchronous loader. The `mina-verify-wasm` (nodejs target) package is CommonJS and
 // instantiates its wasm synchronously on require, so the whole verify path is sync —
-// it just blocks while the (CPU-bound) proof check runs. `createRequire(import.meta.url)`
-// works from both the ESM and CJS builds.
+// it just blocks while the (CPU-bound) proof check runs.
+//
+// Resolve the optional backend from both this module's location (covers a hoisted
+// install next to the SDK) and the host process's cwd (covers a backend installed at
+// the app root, or an SDK that is symlinked / pnpm-isolated). `import.meta.url` works
+// in both the ESM and CJS builds (esbuild shims it for CJS).
 function loadBackend(): VerifyBackend {
-  if (!backend) {
+  if (backend) return backend;
+  const bases = [import.meta.url, pathToFileURL(join(process.cwd(), 'noop.js')).href];
+  let lastError: unknown;
+  for (const base of bases) {
     try {
-      const require = createRequire(import.meta.url);
+      const require = createRequire(base);
       const mod = require(BACKEND_PACKAGE) as Record<string, unknown>;
       const inner = (mod.default ?? mod) as Record<string, unknown>;
       if (typeof inner.verifyPrecomputed !== 'function') {
         throw new Error('module does not export verifyPrecomputed');
       }
       backend = inner as unknown as VerifyBackend;
+      return backend;
     } catch (cause) {
-      throw new VerificationBackendError(cause);
+      lastError = cause;
     }
   }
-  return backend;
+  throw new VerificationBackendError(lastError);
 }
 
 /**
