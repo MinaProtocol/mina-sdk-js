@@ -54,8 +54,8 @@ describe('compareToClaims', () => {
 });
 
 describe('verifyPrecomputedBlock', () => {
-  it('throws VerificationBackendError when mina-verify-wasm is not installed', async () => {
+  it('throws VerificationBackendError when mina-verify-wasm is not installed', () => {
     // The wasm backend is an optional, unbundled dependency; in CI it is absent.
-    await expect(verifyPrecomputedBlock('{}')).rejects.toBeInstanceOf(VerificationBackendError);
+    expect(() => verifyPrecomputedBlock('{}')).toThrow(VerificationBackendError);
   });
 });

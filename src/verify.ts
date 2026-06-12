@@ -19,6 +19,8 @@
  * a daemon publishes to GCS / the archive), which carries the full protocol state.
  */
 
+import { createRequire } from 'node:module';
+
 /** Networks with an embedded verification key. */
 export type VerifyNetwork = 'devnet' | 'mainnet';
 
@@ -68,41 +70,47 @@ interface VerifyBackend {
 // A non-literal specifier so TypeScript/bundlers don't try to resolve the (optional,
 // unbundled) backend at build time — it's resolved at runtime from the host's modules.
 const BACKEND_PACKAGE = 'mina-verify-wasm';
-let backendPromise: Promise<VerifyBackend> | undefined;
+let backend: VerifyBackend | undefined;
 
-function loadBackend(): Promise<VerifyBackend> {
-  if (!backendPromise) {
-    backendPromise = (async () => {
-      try {
-        const mod = (await import(BACKEND_PACKAGE)) as Record<string, unknown>;
-        const inner = (mod.default ?? mod) as Record<string, unknown>;
-        if (typeof inner.verifyPrecomputed !== 'function') {
-          throw new Error('module does not export verifyPrecomputed');
-        }
-        return inner as unknown as VerifyBackend;
-      } catch (cause) {
-        backendPromise = undefined; // allow a later retry once installed
-        throw new VerificationBackendError(cause);
+// Synchronous loader. The `mina-verify-wasm` (nodejs target) package is CommonJS and
+// instantiates its wasm synchronously on require, so the whole verify path is sync —
+// it just blocks while the (CPU-bound) proof check runs. `createRequire(import.meta.url)`
+// works from both the ESM and CJS builds.
+function loadBackend(): VerifyBackend {
+  if (!backend) {
+    try {
+      const require = createRequire(import.meta.url);
+      const mod = require(BACKEND_PACKAGE) as Record<string, unknown>;
+      const inner = (mod.default ?? mod) as Record<string, unknown>;
+      if (typeof inner.verifyPrecomputed !== 'function') {
+        throw new Error('module does not export verifyPrecomputed');
       }
-    })();
+      backend = inner as unknown as VerifyBackend;
+    } catch (cause) {
+      throw new VerificationBackendError(cause);
+    }
   }
-  return backendPromise;
+  return backend;
 }
 
 /**
  * Verify a **precomputed block** (the JSON a daemon publishes; the `{ "version", "data" }`
  * form, or a bare block object) and return its proof-backed facts.
  *
+ * Synchronous and **blocking**: the proof check is CPU-bound and currently takes tens of
+ * seconds, during which it holds the event loop. Run it off the main thread (a worker) if
+ * the host must stay responsive.
+ *
  * @throws {VerificationError} if the proof does not verify or the JSON is malformed.
  * @throws {VerificationBackendError} if `mina-verify-wasm` is not installed.
  */
-export async function verifyPrecomputedBlock(
+export function verifyPrecomputedBlock(
   precomputed: string | object,
   options: VerifyOptions = {},
-): Promise<VerifiedBlock> {
+): VerifiedBlock {
   const network = options.network ?? 'devnet';
   const json = typeof precomputed === 'string' ? precomputed : JSON.stringify(precomputed);
-  const backend = await loadBackend();
+  const backend = loadBackend();
   let raw: string;
   try {
     raw = backend.verifyPrecomputed(network, json);
@@ -148,14 +156,16 @@ export function compareToClaims(
  * proof-backed facts — the endpoint-honesty primitive. `honest: false` means the source
  * served data inconsistent with what the SNARK proof attests.
  *
+ * Synchronous and blocking — see {@link verifyPrecomputedBlock}.
+ *
  * @throws {VerificationError} if the proof does not verify.
  * @throws {VerificationBackendError} if `mina-verify-wasm` is not installed.
  */
-export async function checkBlockClaims(
+export function checkBlockClaims(
   precomputed: string | object,
   claimed: Partial<VerifiedBlock>,
   options: VerifyOptions = {},
-): Promise<HonestyResult> {
-  const facts = await verifyPrecomputedBlock(precomputed, options);
+): HonestyResult {
+  const facts = verifyPrecomputedBlock(precomputed, options);
   return compareToClaims(facts, claimed);
 }

@@ -118,22 +118,24 @@ import { verifyPrecomputedBlock, checkBlockClaims } from '@o1-labs/mina-sdk';
 
 // A "precomputed block" is the JSON a daemon publishes to GCS / the archive. (A daemon's
 // GraphQL `protocolState` is a lossy projection and is NOT sufficient to verify a proof.)
-const facts = await verifyPrecomputedBlock(precomputedJson, { network: 'devnet' });
+const facts = verifyPrecomputedBlock(precomputedJson, { network: 'devnet' });
 // -> { height, stateHash, previousStateHash, stagedLedgerHash }   (all proof-backed)
 
 // Endpoint-honesty check: does an untrusted source's claim match what the proof attests?
-const { honest, mismatches } = await checkBlockClaims(precomputedJson, {
+const { honest, mismatches } = checkBlockClaims(precomputedJson, {
   stateHash: claimedFromSomeEndpoint,
 });
 if (!honest) console.error('endpoint lied:', mismatches);
 ```
 
-`verifyPrecomputedBlock` rejects with `VerificationError` if the proof does not verify (do
-not ingest the block), or `VerificationBackendError` if `mina-verify-wasm` is not installed.
-`compareToClaims(facts, claimed)` is the pure (no-I/O) comparison if you already have facts.
+`verifyPrecomputedBlock` throws `VerificationError` if the proof does not verify (do not
+ingest the block), or `VerificationBackendError` if `mina-verify-wasm` is not installed.
+`compareToClaims(facts, claimed)` is the pure comparison if you already have facts.
 
-> **Performance:** verification is currently single-threaded (~tens of seconds per block);
-> a threaded build is planned. Suitable for periodic / background checks today.
+> **Synchronous & blocking.** Verification is single-threaded and CPU-bound (~tens of
+> seconds per block), and these calls hold the event loop while running. Fine for scripts
+> and periodic/background checks; run it in a worker thread if the host must stay
+> responsive. A threaded backend is planned.
 
 ## Errors
 
