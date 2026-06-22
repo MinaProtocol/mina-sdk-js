@@ -9,6 +9,7 @@ TypeScript/JavaScript SDK for interacting with [Mina Protocol](https://minaproto
 ## Features
 
 - **Daemon GraphQL client** — query node status, accounts, blocks; send payments and delegations
+- **Trustless verification** — verify a block's SNARK proof in-process (optional `mina-verify-wasm` backend)
 - Typed response objects with a `Currency` type backed by `bigint`
 - Automatic retry with configurable backoff
 - Public `executeQuery()` for custom GraphQL queries
@@ -97,6 +98,45 @@ console.log(b.mul(3).toString()); // "4.500000000"
 
 `Currency` is immutable and stored as a `bigint` of nanomina, so all arithmetic is exact.
 
+## Trustless verification
+
+Verify a Mina block's Pickles/kimchi SNARK proof in JS. A block that verifies attests its
+**entire chain history** up to that block by Pickles recursion — so you can check chain
+validity against an *untrusted* source (a node, an indexer, a GCS archive) without trusting
+whoever supplied the bytes.
+
+The proof verifier is a WebAssembly module, [`mina-verify-wasm`](https://github.com/MinaProtocol/mina-verify),
+that is **not bundled** with this SDK (it is several MB) and is loaded lazily on first use.
+Install it to enable verification:
+
+```bash
+npm install mina-verify-wasm
+```
+
+```ts
+import { verifyPrecomputedBlock, checkBlockClaims } from '@o1-labs/mina-sdk';
+
+// A "precomputed block" is the JSON a daemon publishes to GCS / the archive. (A daemon's
+// GraphQL `protocolState` is a lossy projection and is NOT sufficient to verify a proof.)
+const facts = verifyPrecomputedBlock(precomputedJson, { network: 'devnet' });
+// -> { height, stateHash, previousStateHash, stagedLedgerHash }   (all proof-backed)
+
+// Endpoint-honesty check: does an untrusted source's claim match what the proof attests?
+const { honest, mismatches } = checkBlockClaims(precomputedJson, {
+  stateHash: claimedFromSomeEndpoint,
+});
+if (!honest) console.error('endpoint lied:', mismatches);
+```
+
+`verifyPrecomputedBlock` throws `VerificationError` if the proof does not verify (do not
+ingest the block), or `VerificationBackendError` if `mina-verify-wasm` is not installed.
+`compareToClaims(facts, claimed)` is the pure comparison if you already have facts.
+
+> **Synchronous & blocking.** Verification is single-threaded and CPU-bound (~tens of
+> seconds per block), and these calls hold the event loop while running. Fine for scripts
+> and periodic/background checks; run it in a worker thread if the host must stay
+> responsive. A threaded backend is planned.
+
 ## Errors
 
 - `GraphQLError` — daemon returned an `errors` array (not retried)
@@ -104,6 +144,8 @@ console.log(b.mul(3).toString()); // "4.500000000"
 - `AccountNotFoundError` — `getAccount` returned a `null` account
 - `CurrencyParseError` — invalid input to a `Currency.from*` factory
 - `CurrencyUnderflowError` — `Currency.sub` would go negative
+- `VerificationError` — a block's SNARK proof did not verify (do not ingest)
+- `VerificationBackendError` — the optional `mina-verify-wasm` backend is not installed
 
 ## Custom Queries
 
